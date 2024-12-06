@@ -1,0 +1,298 @@
+<!-- templates/calc/calc.html -->
+{% extends 'MajorHelp/HomePage.html' %}
+
+{% load static %}
+
+{% block title %}Tuition Calc{% endblock %}
+
+{% block stylesheet %}{% static 'css/calc.css' %}{% endblock stylesheet %}
+
+{% block script %}
+<script>
+    const inputData = {
+        uni      : null,
+        outstate : false,
+        dept     : null,
+        major    : null,
+        aid      : "",   // empty string represents no aid
+    }
+
+    const inputIds = [
+        "uni",
+        "outstate",
+        "dept",
+        "major",
+        "aid",
+    ]
+
+
+    function getValues() {
+
+        for (let i = 0; i < inputIds.length; i++){
+            Input(inputIds[i], false, false);
+        }
+
+
+        validateInputData();
+    }
+
+
+    function Input(entry, required = false, validate=true) {
+
+        let element, data;
+
+
+        if (entry === undefined) return false;
+
+        element = document.getElementById(entry);
+
+        if (!element) return false;
+
+
+
+        if (element.tagName.toLowerCase() === 'input' && element.type === "checkbox") {
+            // Checkbox input
+
+            data = element.checked;
+        } else {
+            // Default
+
+            // check if the entered data isn't just whitespace via trim and length
+            data = document.getElementById(entry).value.trim();
+            if (data.length == 0 && required) return;
+        }
+        inputData[entry] = data;
+
+        if (validate) {
+            validateInputData();
+        }
+
+    }
+    
+
+    async function validateInputData() {
+        for (const [ignored, value] of Object.entries(inputData)) {
+            if (value == null) return;
+        }
+        // None of the data values are null, the request is ready.
+
+        // Prepare the GET request string for the url
+        let getStr = "?";
+
+        for (const [key, value] of Object.entries(inputData)) {
+            getStr = getStr.concat(key.toString() + "=" + value.toString() + "&");
+        }
+         
+        // Make a fetch request, the url can just be the get data
+        // Django will automatically prepend /calc/ to it.
+
+        const response = await fetch(getStr,  { 
+            method : 'GET',
+            headers: {"Content-Type": "application/json",},
+        });
+
+        if (!response.ok) {
+            throw new Error(`Response status: ${response.status}`);
+        }
+
+        const data = await response.json();
+        
+        updateData(data);
+    }
+
+    function updateData(data) {
+        const total = "$" + data['minTui'] + ' - $' + data['maxTui'];
+
+        document.getElementById("total1").textContent=total;
+        document.getElementById("total2").textContent=total;
+
+
+        document.getElementById("output").style.display = 'block';
+
+
+        uni = data["uni"];
+        document.getElementById("uniName").textContent = uni['name'];
+        document.getElementById("uniTui").textContent = "$" + uni['baseMinTui'] + ' - $' + uni['baseMaxTui'];
+        document.getElementById("uniFees").textContent = "$" + uni['fees'];
+
+
+        major = data["major"];
+        document.getElementById("majorName").textContent = major['name'];
+        document.getElementById("majorTui").textContent = "$" + major['baseMinTui'] + ' - $' + major['baseMaxTui'];
+        document.getElementById("majorFees").textContent = "$" + major['fees'];
+
+
+        aid = data["aid"];
+        
+        if (aid["name"] !== "") {
+            document.getElementById("financialAidOutput").style.display = 'inline';
+            document.getElementById("aidName").textContent = aid['name'];
+            document.getElementById("aidTui").textContent = "-$" + aid['amount'];
+        } else {
+            document.getElementById("financialAidOutput").style.display = 'none';
+        }
+
+    }
+</script>
+{% endblock script %}
+
+
+{% block content %}
+<!-- get the original content from the home page-->
+<div>
+    <h1 id="title">Tuition Calculator</h1>
+</div>
+
+<div id="inputOutput">
+    <div id="input" class="content-box">
+        <div>
+            <h2>Let's start by choosing your <span class="color-text">school</span>.</h2>
+            <!--The "; return false" prevents the form from actually submitting via post or get
+                thus refreshing the page... which clears the form.-->
+            <form onsubmit="Input('uni', true); return false">
+                <input type="text" id="uni" name="university" placeholder="Enter your university."
+                    value="">
+            </form>
+            <br>
+            <input type="checkbox" name="outstate" id="outstate" value="true" onclick="Input('outstate');">
+            <label>Are you attending this university from out of state?</label>
+        </div>
+        
+        <div>
+            <h2>Now select the <span class="color-text">department</span>.</h2>
+                <select id="dept" name="department" onchange="Input('dept')">
+                    <option value="" disabled="" selected="">Pick a Department</option>
+                    <option value="Humanities and Social Sciences">Humanities and Social Sciences</option>
+                    <option value="Natural Sciences and Mathematics">Natural Sciences and Mathematics</option>
+                    <option value="Business and Economics">Business and Economics</option>
+                    <option value="Education">Education</option>
+                    <option value="Engineering and Technology">Engineering and Technology</option>
+                    <option value="Health Sciences">Health Sciences</option>
+                    <option value="Arts and Design">Arts and Design</option>
+                    <option value="Agriculture and Environmental Studies">Agriculture and Environmental Studies</option>
+                    <option value="Communication and Media">Communication and Media</option>
+                    <option value="Law and Criminal Justice">Law and Criminal Justice</option>
+                </select>       
+        </div>
+
+        <div>
+            <h2>Great, now lets talk <span class="color-text">majors</span>.</h2>
+            <form onsubmit="Input('major', true); return false">
+                <input type="text" name="major" id="major" placeholder="" value="">
+            </form> 
+        </div>
+
+        <div id="financialAidInput">
+            <h2>Do you have any <span class="color-text">scholarships</span> or <span class="color-text">financial aid</span>?</h2>
+            <form onsubmit="Input('aid'); return false">
+                <input type="text" name="aid" id="aid" placeholder="" value="">
+            </form>
+        </div>
+
+        <!--
+        <div id="minors">
+            <h2>Are you interested in enrolling in any minors?</h2>
+            (placeholder text)
+        </div>
+
+        
+
+        <div id="extraAid">
+            <h2>Enter any other estimated external aids</h2>
+            (placeholder text)
+        </div>
+        -->
+        <br>
+        <input id="submitButton" type="button" value="submit" onclick="getValues();">
+    </div>
+
+    <div id="output" class="content-box" style="display: none;">
+        <h2>Estimated <span class="color-text">Total</span></h2>
+        <h1 id="total1">{{ total | default:"$XX,XXX - $XXX,XXX"}}</h1>
+        
+
+
+        <h2>Details:</h2>
+
+        <!--
+            A for loop could be placed through here to iterate through university, major, scholarship, etc
+            and thier costs, credits, notes, etc
+        -->
+
+        <h3>University Related Costs</h3>
+        <!--The name of the University/Major/Scholarship can go here-->
+        <b><span id="uniName" class="color-text">XXXXXXXXX</span></b>
+        <ul class="outputList">
+            <!--
+                For future reference, this can probably be replaced with a for loop containing all applicable
+                items (meaning the left side will be replaced with a variable and presumably the right side 
+                would be something like variableName.amount)
+            -->
+            <li>
+                Base Tuition <span id="uniTui">{{ baseTuition | default:"$X,XXX" }}</span>
+            </li>
+            <li>
+                Fees <span id="uniFees">{{ baseTuition | default:"$X,XXX" }}</span>
+            </li>
+
+            <br>
+
+            <!--
+                Notes section
+                Can be surrounded by a for to include any notes
+            -->
+            <!--
+            <small>
+                <li class="outputNote"> </li>  
+            </small>
+            -->
+
+
+
+        <h3>Major Related Costs</h3>
+        <b><span id="majorName" class="color-text">XXXXXXXXXXXX</span></b>
+        <ul class="outputList">
+            <li>
+                Base Tuition <span id="majorTui">{{ baseTuition | default:"$X,XXX" }}</span>
+            </li>
+            <li>
+                Fees <span id="majorFees">{{ baseTuition | default:"$X,XXX" }}</span>
+            </li>
+
+            <!--
+                Notes section
+                Can be surrounded by a for to include any notes
+            -->
+            <!--
+            <small>
+                <li class="outputNote">
+                    Alumini have reported that this university has a hidden lab fee specific to this Major.
+                </li>
+            </small>
+            -->
+
+
+        </ul>
+        
+        <div id="financialAidOutput" style="display : none;">
+            <h3>Financial Aid</h3>
+            <b><span id="aidName" class="color-text">XXXXXXXXXXXX</span></b>
+            <ul class="outputList">
+                <li>
+                    Price reducted <span id="aidTui"></span>
+                </li>
+            </ul>
+        </div>
+
+
+        <!--
+        <h4>Subtotal</h4>
+        <h4 style="margin-left:2.5em">$X,XXX - $XX,XXX
+        -->
+
+        <!-- Just repeat the estimated total again for readability-->
+        <h2>Estimated <span class="color-text">Total</span></h2>
+        <h1 id="total2">{{ total | default:"$XX,XXX - $XXX,XXX"}}</h1>
+    </div>
+</div>
+{% endblock content %}
