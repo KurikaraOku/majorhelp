@@ -2,7 +2,13 @@
 
 from django import forms
 from django.contrib.auth.forms import UserCreationForm
+from django.contrib.auth.forms import AuthenticationForm
 from django.contrib.auth.models import User
+from django import forms
+from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
+
+User = get_user_model()
 
 class CustomUserCreationForm(UserCreationForm):
     # Add any fields you want to customize here
@@ -19,3 +25,24 @@ class CustomUserCreationForm(UserCreationForm):
         password1 = self.cleaned_data.get("password1")
         # You can add your own password validation here if neede
         return password1
+
+class CustomLoginForm(AuthenticationForm):
+    remember_me = forms.BooleanField(required=False, widget=forms.CheckboxInput())
+
+class CustomAuthenticationForm(AuthenticationForm):
+    username = forms.CharField(label='Username or Email')
+
+    def clean_username(self):
+        username_or_email = self.cleaned_data['username']
+        
+        # Check if the input is an email
+        if '@' in username_or_email:
+            # If it's an email, find the corresponding username
+            try:
+                user = User.objects.get(email=username_or_email)
+            except User.DoesNotExist:
+                raise forms.ValidationError("No user found with this email.")
+            return user.username  # Return the username associated with the email
+        
+        # If it's not an email, treat it as a username
+        return username_or_email

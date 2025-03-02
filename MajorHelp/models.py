@@ -14,12 +14,12 @@ from pestopanini import settings
 # Model for university
 class University(models.Model):
     name = models.TextField()
-    location = models.CharField(max_length=255)  # City and State
+    location = models.CharField(default="", max_length=255)  # City and State
     is_public = models.BooleanField(default=True, help_text="Check if the university is public; leave unchecked for private")
-    aboutText = models.TextField()
-    TotalUndergradStudents = models.IntegerField()
-    TotalGradStudents = models.IntegerField()
-    GraduationRate = models.DecimalField(max_digits=4, decimal_places=1)
+    aboutText = models.TextField(default= "")
+    TotalUndergradStudents = models.IntegerField(default = 0)
+    TotalGradStudents = models.IntegerField(default = 0)
+    GraduationRate = models.DecimalField(default=0.0, max_digits=4, decimal_places=1)
 
     # Added for tuition calc
     in_state_base_min_tuition = models.IntegerField(
@@ -126,6 +126,9 @@ class UniversityReview(models.Model):
     pub_date = models.DateTimeField(auto_now_add=True)
     university = models.ForeignKey(University, on_delete=models.CASCADE, related_name='university_review')
     
+    class Meta:
+        unique_together = ('username', 'university')
+    
     def __str__(self):
         return f"{self.username}: {self.review_text}"
     
@@ -164,7 +167,7 @@ class Major(models.Model):
     )
     major_name = models.CharField(max_length=255)
     major_description = models.TextField(blank=True)
-    slug = models.SlugField(default="", editable=False, null=False, unique=True)
+    slug = models.SlugField(editable=False, null=False, unique=True)
     department = models.CharField(max_length=50, choices=DEPARTMENT_CHOICES)
     in_state_min_tuition = models.IntegerField(
         validators=[MinValueValidator(0)],
@@ -301,3 +304,11 @@ class CustomUser(AbstractUser):
     def __str__(self):
         return self.username
     
+
+class UniversityRequest(models.Model):
+    user = models.ForeignKey(CustomUser, on_delete=models.CASCADE, null=True, blank=True)
+    request_text = models.TextField()
+    submitted_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Request by {self.user.username if self.user else 'Anonymous'} on {self.submitted_at.strftime('%Y-%m-%d %H:%M:%S')}"

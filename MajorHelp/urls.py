@@ -7,6 +7,7 @@ from django.urls.converters import register_converter
 from . import views
 from django.contrib.auth.views import LogoutView
 from MajorHelp.views import * # about,contact, SearchView, SchoolResultsView, DepartmentResultsView, LeaveReview
+from .forms import CustomAuthenticationForm
 
 app_name = "MajorHelp"
 
@@ -33,10 +34,13 @@ urlpatterns = [
     path('create/review/<str:username>/', LeaveUniversityReview.as_view(), name="create_review"),
    
     # Adding login and signup views
-    path('accounts/login/', auth_views.LoginView.as_view(), name='login'),  # Login view
+    path('accounts/login/', LoginView.as_view(authentication_form=CustomAuthenticationForm), name='login'),
     path('accounts/logout/', LogoutView.as_view(), name='logout'),
-    path('accounts/signup/', views.SignUpView.as_view(), name='signup'),  # Custom signup view
+    path('accounts/signup/', views.SignUpView.as_view(), name='signup'),
+    path('accounts/activate/<str:token>/', activate_account, name='activate_account'),
     path('accounts/settings/', views.settings_view, name='settings'),
+    path('accounts/check-email/', views.check_email_view, name='check_email'),
+
     
     # URLS for the Contact and About page
     path('about/', about, name='about'),
@@ -47,6 +51,7 @@ urlpatterns = [
     path('search/school/<str:query>/', SchoolResultsView.as_view(), name='school_results'),
     path('search/department/<str:query>/', DepartmentResultsView.as_view(), name='department_results'),
     path('search/major/<str:query>/', views.MajorResultsView.as_view(), name='major_results'),
+    path('search/university-request/', UniversityRequestView.as_view(), name='university-request'),
 
     #urls for major overviews
     path('MajorOverview/<slashslug:slug>/', views.MajorOverviewView.as_view(), name='major-detail'),
@@ -56,4 +61,8 @@ urlpatterns = [
     
     # URLS for the Tuition Calculator
     path('calc/', CalcView.as_view(), name='calc'),
+    path('calc/info/', CalcInfo.as_view(), name='calcInfo'),
+    path("api/university_search/", university_search, name="university_search"),
+    path("api/majors/", major_list, name="major_list"),
+    path("api/major_info/", major_info, name="major_info"),
 ]

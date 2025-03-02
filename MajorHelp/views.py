@@ -1,5 +1,5 @@
 from django.shortcuts import get_object_or_404, render, redirect
-from django.http import HttpResponse, HttpResponseRedirect
+from django.http import HttpResponse, HttpResponseRedirect, JsonResponse, HttpResponseBadRequest
 from django.template import loader
 from django.http import Http404
 from django.db.models import F
@@ -8,11 +8,11 @@ from django.views import generic
 from django.utils import timezone
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.mixins import LoginRequiredMixin
-from django.http import JsonResponse
 from django.views.generic import TemplateView
 from django.contrib.auth.forms import UserCreationForm
 from django.views import View
 from django.contrib.auth import login
+from django.contrib.auth.views import LoginView
 from .forms import CustomUserCreationForm
 from django import forms
 from django.contrib.auth.models import User
@@ -26,9 +26,27 @@ import re
 from django.db.models import F, Value
 from django.db.models.functions import Cast
 from django.db.models import Min
+from django.core.signing import TimestampSigner
+from django.core.mail import send_mail
+from django.urls import reverse
+from django.shortcuts import render, redirect
+from django.contrib import messages
+from .forms import CustomUserCreationForm
+from django.contrib.auth import get_user_model
+from django.views import View
+from django.shortcuts import render, redirect
+from django.contrib.auth import login
+from django.contrib import messages
+from django.core.mail import send_mail
+from django.urls import reverse
+from django.core.signing import TimestampSigner, BadSignature, SignatureExpired
+from .forms import CustomUserCreationForm
+from django.contrib.auth import get_user_model
 
 # Used to catch an exception if GET tries to get a value that isn't defined.
 from django.utils.datastructures import MultiValueDictKeyError
+
+
 
 def settings_view(request):
     return render(request, 'settings.html')  # Make sure you have a 'settings.html' template, or adjust accordingly
@@ -58,8 +76,10 @@ class UniversityOverviewView(DetailView):
         
         #JUMP
         if self.request.user.is_authenticated:
-            user_review = UniversityReview.objects.filter(username=self.request.user.username, university=university).first()
+            self.request.user.refresh_from_db()
+            user_review = UniversityReview.objects.filter(username=self.request.user.username, university=university).exists()
             context['user_review'] = user_review  # If review exists, pass it to the template
+
         
         return context
         
@@ -91,22 +111,44 @@ class SubmitRatingView(View):
 
 class LeaveUniversityReview(View):
     def post(self, request, username):
-        review_text = request.POST.get("review_text", "")
-        if review_text:
-            university_id = request.POST.get("university_id")
-            university = get_object_or_404(University, pk=university_id)
+        review_text = request.POST.get("review_text", "").strip()
+        university_id = request.POST.get("university_id")
+
+        if not review_text:
+            messages.error(request, 'Review text cannot be empty.')
+            return redirect('MajorHelp:university-detail', slug=university_id)
+
+        university = get_object_or_404(University, pk=university_id)
+
+        # Check if the user has already left a review for this university
+        existing_review = UniversityReview.objects.filter(username=request.user.username, university=university).exists()
+
+        if existing_review:
+            messages.error(request, 'You have already submitted a review for this university.')
+        else:
+            # Create and save the review
             UniversityReview.objects.create(
                 username=request.user.username,
                 review_text=review_text,
                 university=university
             )
-            messages.success(request, 'Your review has been submitted successfully!')
-        else:
-            messages.error(request, 'Review text cannot be empty.')
+            messages.success(request, 'Your review has been successfully submitted!')
 
         return redirect('MajorHelp:university-detail', slug=university.slug)
 
-    
+# Custom form for login
+class CustomLoginView(LoginView):
+    def form_valid(self, form):
+        remember_me = self.request.POST.get("remember_me")
+        
+        if not remember_me:
+            # Expire session when the browser closes
+            self.request.session.set_expiry(0)
+        else:
+            # Keep session active for 2 weeks
+            self.request.session.set_expiry(1209600)  
+        
+        return super().form_valid(form)
     
 # Custom form for SignUp
 class CustomUserCreationForm(forms.ModelForm):
@@ -149,6 +191,8 @@ class CustomUserCreationForm(forms.ModelForm):
             user.save()
         return user
 
+User = get_user_model()
+signer = TimestampSigner()
 
 # SignUpView for user registration
 class SignUpView(View):
@@ -159,17 +203,53 @@ class SignUpView(View):
     def post(self, request):
         form = CustomUserCreationForm(request.POST)
         if form.is_valid():
-            user = form.save()  # Save the new user
-            login(request, user)  # Log the user in immediately after signup
-            messages.success(request, 'Account created successfully.')
-            return redirect('MajorHelp:home')  # Redirect to home page after successful signup
+            user = form.save(commit=False)
+            user.is_active = False  # Mark account as inactive until email verification
+            user.save()
+
+            # Generate a token that includes the user's primary key
+            token = signer.sign(user.pk)
+            activation_link = request.build_absolute_uri(
+    reverse('MajorHelp:activate_account', args=[token])
+)
+            # Send an activation email to the user
+            send_mail(
+                'Activate Your MajorHelp Account',
+                f'Please click the link to activate your account: {activation_link}',
+                'noreply@majorhelp.com',  # Replace with your sender email
+                [user.email],
+                fail_silently=False,
+            )
+            messages.success(request, 'An activation email has been sent. Please check your inbox.')
+            return redirect('MajorHelp:check_email')  # Redirect to login page after sign-up
         return render(request, 'registration/signup.html', {'form': form})
+    
+
+def check_email_view(request):
+    return render(request, 'registration/check_email.html')
 
 def about(request):
     return render(request, 'About/about.html')
     
 def contact(request):
     return render(request,'Contact/contact.html')
+
+def activate_account(request, token):
+    try:
+        # Unsign the token; valid for 1 day (86400 seconds)
+        user_pk = signer.unsign(token, max_age=86400)
+        user = User.objects.get(pk=user_pk)
+        user.is_active = True  # Activate the user
+        user.save()
+        messages.success(request, 'Your account has been activated. You can now log in.')
+        return redirect('MajorHelp:login')
+    except SignatureExpired:
+        messages.error(request, 'Activation link has expired. Please sign up again.')
+        return redirect('MajorHelp:signup')
+    except (BadSignature, User.DoesNotExist):
+        messages.error(request, 'Invalid activation link.')
+        return redirect('MajorHelp:signup')
+
 
 #the search function
 class SearchView(View):
@@ -430,14 +510,32 @@ class MajorOverviewView(DetailView):
 
 class CalcView(View):
     def get(self, request):
+        # TODO(jpreuss) Pass the json back to the frontend to prepopulate
+        #               the already filled data.
+        return render(request, 'calc/calc.html')
+
+# Flag for the backend to tell the front that it doesn't exist.
+DNE = "DOESNOTEXIST"
+
+class CalcInfo(View):
+    def get(self, request):
         
+        # Check to see if there are no entries in the GET request, if so, its
+        # likely because the user is accessing /calc/info on their browser directly.
+        if not request.GET:
+
+        # if so then just redirect to the calculator
+            return HttpResponseRedirect(reverse("MajorHelp:calc"))
+        
+
+
         inData = {}
         try: 
             inData = {
-                "university" : request.GET['uni'],
+                "university" : request.GET['uni'],          # required
                 "outstate"   : request.GET['outstate'],
                 "department" : request.GET['dept'],
-                "major"      : request.GET['major'],
+                "major"      : request.GET['major'],        # required
                 "aid"        : request.GET['aid'],
             }
         
@@ -445,23 +543,14 @@ class CalcView(View):
         # Effectively, this saves me from having to do an if with DeMorgan's law on every
         # single data value.
         #
-        # If there isn't a value defined yet, then that means that the user is accessing
-        # the page as normal and has yet to input anything, so just return calc.html.
-        except MultiValueDictKeyError:
+        # If there isn't a value defined yet, then for some reason the front end did not
+        # validate the get json, return a 400 - Bad Request
+        except MultiValueDictKeyError as e:
             
-            return render(request, 'calc/calc.html')
-
-        
-        # If all of those values are filled out, then that means that the javascript in
-        # calc.html is making another get request to this view with the data supplied.
-        # 
-        # Don't redirect, instead return a JSON with the resulting tuition data.
-        #
-        # If for some reason the user fills out a get request manually via the url link,
-        #
-        #   (ie http://localhost:8000/calc/?uni=University+Of+South+Carolina&outstate=true&dept=Education&major=CIS)
-        #
-        # ...they will just get the json data directly.
+            # \u0002 (␂) aka start of text will be used in case the front end needs to
+            # skip any header and get to the 'str(e)' that contains the malformated
+            # (likely null) entry.
+            return HttpResponseBadRequest("<h1> 400 Bad Request </h1><br>\u0002" + str(e) + " is not defined.")
 
 
         # Prepare the output JSON
@@ -470,6 +559,12 @@ class CalcView(View):
         outstate = inData["outstate"] == "true"
 
         # Get the university.
+
+        # University is a required entry
+        if inData["university"] == "":
+            return HttpResponseBadRequest("<h1> 400 Bad Request </h1><br>\u0002 'uni' is left blank.")
+
+
         university = {
             "name"          : None,
             "baseMinTui"    : 0,
@@ -481,20 +576,29 @@ class CalcView(View):
         # For now we'll have to rely on the user inputting the name of the university exactly.
         uniObj = None
         try:
-            uniObj = University.objects.get(name=inData["university"])
-        except uniObj.DoesNotExist as error:
-            raise
+            uniObj = University.objects.get(name__iexact=inData["university"])
 
-        # get the data for the university
-        university["name"]  = uniObj.name
+        except University.DoesNotExist as error:
+            # print("No university of name: \"" + inData["university"] + "\" was found.")
 
-        university["baseMinTui"] = uniObj.out_of_state_base_min_tuition if outstate else uniObj.in_state_base_min_tuition
-        university["baseMaxTui"] = uniObj.out_of_state_base_max_tuition if outstate else uniObj.in_state_base_max_tuition
+            university["name"] = DNE
+        else:
+            # get the data for the university
 
-        university["fees"] = uniObj.fees
+            university["name"]  = uniObj.name
+
+            university["baseMinTui"] = uniObj.out_of_state_base_min_tuition if outstate else uniObj.in_state_base_min_tuition
+            university["baseMaxTui"] = uniObj.out_of_state_base_max_tuition if outstate else uniObj.in_state_base_max_tuition
+
+            university["fees"] = uniObj.fees
 
 
         # Get the Major
+
+        # Major is a required entry
+        if inData["major"] == "":
+            return HttpResponseBadRequest("<h1> 400 Bad Request </h1><br>\u0002 'major' is left blank.")
+
 
         major = {
             "name"          : None,
@@ -506,20 +610,24 @@ class CalcView(View):
 
 
         majorObj = None
-        try:
-            majorObj = Major.objects.get(major_name=inData["major"])
-        except MajorObj.DoesNotExist as error:
-            raise
+        try: 
+            majorObj = Major.objects.get(major_name__iexact=inData["major"])
 
-        # get the data for the major
-        major["name"] = majorObj.major_name
+        except Major.DoesNotExist as error:
+            # print("No major of name: \"" + inData["major"] + "\" was found.")
 
-        major["uni"] = majorObj.university.name
+            major["name"] = DNE
+        else: 
+            # get the data for the majo
 
-        major["baseMinTui"] = majorObj.out_of_state_min_tuition if outstate else majorObj.in_state_min_tuition
-        major["baseMaxTui"] = majorObj.out_of_state_max_tuition if outstate else majorObj.in_state_max_tuition
+            major["name"] = majorObj.major_name
 
-        major["fees"] = majorObj.fees
+            major["uni"] = majorObj.university.name
+
+            major["baseMinTui"] = majorObj.out_of_state_min_tuition if outstate else majorObj.in_state_min_tuition
+            major["baseMaxTui"] = majorObj.out_of_state_max_tuition if outstate else majorObj.in_state_max_tuition
+
+            major["fees"] = majorObj.fees
 
 
         # setup financial aid
@@ -533,14 +641,16 @@ class CalcView(View):
         if (inData["aid"] != ""):
             aidObj = None
             try:
-                aidObj = FinancialAid.objects.get(name=inData["aid"])
+                aidObj = FinancialAid.objects.get(name__iexact=inData["aid"])
             except FinancialAid.DoesNotExist as error:
-                raise
+                # print("No financial aid of name: \"" + inData["aid"] + "\" was found.")
 
-            # get the data for Financial aid
-            aid["name"] = aidObj.name
+                aid["name"] = DNE
+            else:
+                # get the data for Financial aid
+                aid["name"] = aidObj.name
 
-            aid["amount"] = aidObj.amount
+                aid["amount"] = aidObj.amount
 
 
 
@@ -604,3 +714,102 @@ def LeaveMajorReview(request, slug):
     return render(request, 'leave_review.html', {'major': major})
 
 # Render review stars in Major Overview
+class UniversityRequestView(View):
+    def get(self, request):
+        return render(request, 'search/universityRequest.html')
+
+    def post(self, request):
+        request_text = request.POST.get('request_text')
+        if request_text:
+            UniversityRequest.objects.create(
+                user=request.user if request.user.is_authenticated else None,
+                request_text=request_text
+            )
+            messages.success(request, 'Your university request has been submitted.')
+            return redirect('MajorHelp:home')
+        else:
+            messages.error(request, 'Please enter your request.')
+            return render(request, 'search/universityRequest.html')
+    
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from .models import University
+
+@csrf_exempt
+def university_search(request):
+    query = request.GET.get('query', '')
+
+    if not query:
+        return JsonResponse({"error": "No search query provided"}, status=400)
+
+    universities = University.objects.filter(name__icontains=query)
+
+    if not universities.exists():
+        return JsonResponse({"error": "No university found"}, status=404)
+
+    data = {"universities": []}
+    for uni in universities:
+        data["universities"].append({
+            "name": uni.name,
+            "location": uni.location,
+            "departments": list(uni.majors.values_list("department", flat=True).distinct()),
+        })
+
+    return JsonResponse(data)
+def major_list(request):
+    university_name = request.GET.get('university', '')
+    department = request.GET.get('department', '')
+
+    # Ensure university exists
+    university = University.objects.filter(name__icontains=university_name).first()
+    if not university:
+        return JsonResponse({"error": "University not found"}, status=404)
+
+    # Filter majors by university and department
+    majors = Major.objects.filter(university=university, department=department)
+    if not majors.exists():
+        return JsonResponse({"majors": []})  # Return empty list if no majors found
+
+    data = {"majors": [{"name": major.major_name} for major in majors]}
+    return JsonResponse(data)
+def major_info(request):
+    university_name = request.GET.get('university', '')
+    major_name = request.GET.get('major', '')
+    outstate = request.GET.get('outstate', 'false') == 'true'
+
+    # Ensure university exists
+    university = University.objects.filter(name__icontains=university_name).first()
+    if not university:
+        return JsonResponse({"error": "University not found"}, status=404)
+
+    # Ensure major exists
+    major = Major.objects.filter(university=university, major_name__icontains=major_name).first()
+    if not major:
+        return JsonResponse({"error": "Major not found"}, status=404)
+
+    # Determine correct tuition range
+    if outstate:
+        min_tuition = university.out_of_state_base_min_tuition + major.out_of_state_min_tuition
+        max_tuition = university.out_of_state_base_max_tuition + major.out_of_state_max_tuition
+    else:
+        min_tuition = university.in_state_base_min_tuition + major.in_state_min_tuition
+        max_tuition = university.in_state_base_max_tuition + major.in_state_max_tuition
+
+    data = {
+        "uni": {
+            "name": university.name,
+            "baseMinTui": university.in_state_base_min_tuition if not outstate else university.out_of_state_base_min_tuition,
+            "baseMaxTui": university.in_state_base_max_tuition if not outstate else university.out_of_state_base_max_tuition,
+            "fees": university.fees
+        },
+        "major": {
+            "name": major.major_name,
+            "baseMinTui": major.in_state_min_tuition if not outstate else major.out_of_state_min_tuition,
+            "baseMaxTui": major.in_state_max_tuition if not outstate else major.out_of_state_max_tuition,
+            "fees": major.fees
+        },
+        "minTui": min_tuition,
+        "maxTui": max_tuition
+    }
+
+    return JsonResponse(data)
