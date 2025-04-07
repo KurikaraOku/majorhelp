@@ -23,6 +23,7 @@ from django.shortcuts import render
 from django.utils.decorators import method_decorator
 from django.contrib.auth import get_user_model
 import re
+from django.views.decorators.csrf import csrf_exempt
 from django.db.models import F, Value
 from django.db.models.functions import Cast
 from django.db.models import Min
@@ -42,11 +43,158 @@ from django.urls import reverse
 from django.core.signing import TimestampSigner, BadSignature, SignatureExpired
 from .forms import CustomUserCreationForm
 from django.contrib.auth import get_user_model
+from .discussion_models import DiscussionCategory, DiscussionThread, ThreadReply
+from django.shortcuts import render, get_object_or_404, redirect
+from .forms import NewThreadForm
+from .forms import ThreadReplyForm  
+from django.shortcuts import get_object_or_404, redirect
+import json
 
+from django.views.decorators.http import require_POST # used for favorite feature
 # Used to catch an exception if GET tries to get a value that isn't defined.
 from django.utils.datastructures import MultiValueDictKeyError
 
+# views.py
 
+def college_map(request):
+    return render(request, 'map/college_map.html')
+
+@login_required
+def major_chat(request):
+    return render(request, 'majorchat/chat.html')
+
+class MyThreadsView(LoginRequiredMixin, View):
+    def get(self, request):
+        threads = DiscussionThread.objects.filter(author=request.user).order_by('-created_at')
+        categories = DiscussionCategory.objects.all()
+        return render(request, 'discussion/discussion_board.html', {
+            'threads': threads,
+            'all_categories': categories,
+            'my_threads': True
+        })
+
+@login_required
+def my_discussions(request):
+    threads = DiscussionThread.objects.filter(author=request.user).order_by('-created_at')
+    categories = DiscussionCategory.objects.all()
+    return render(request, 'discussion/discussion_board.html', {
+        'threads': threads,
+        'categories': categories
+    })
+
+@login_required
+def delete_thread(request, pk):
+    thread = get_object_or_404(DiscussionThread, pk=pk)
+    if thread.author == request.user:
+        thread.delete()
+        messages.success(request, "Thread deleted.")
+    else:
+        messages.error(request, "You are not allowed to delete this thread.")
+    return redirect('MajorHelp:discussion_board')
+
+@login_required
+def delete_reply(request, pk):
+    reply = get_object_or_404(ThreadReply, pk=pk)
+    if reply.author == request.user:
+        thread_pk = reply.thread.pk
+        reply.delete()
+        messages.success(request, "Reply deleted.")
+        return redirect('MajorHelp:discussion_detail', pk=thread_pk)
+    else:
+        messages.error(request, "You are not allowed to delete this reply.")
+        return redirect('MajorHelp:discussion_board')
+
+@login_required
+def create_thread(request):
+    if request.method == 'POST':
+        form = NewThreadForm(request.POST)
+        if form.is_valid():
+            thread = form.save(commit=False)
+            thread.author = request.user
+            thread.save()
+            return redirect('MajorHelp:discussion_board')
+    else:
+        form = NewThreadForm()
+    
+    return render(request, 'discussion/create_thread.html', {'form': form})
+
+@login_required
+def discussion_detail(request, pk):
+    thread = get_object_or_404(DiscussionThread, pk=pk)
+    replies = thread.replies.all().order_by('created_at')
+
+    if request.method == "POST":
+        content = request.POST.get('content')
+        if content:
+            ThreadReply.objects.create(
+                thread=thread,
+                content=content,
+                author=request.user,
+                created_at=timezone.now()
+            )
+            return redirect('MajorHelp:discussion_detail', pk=thread.pk)
+
+    return render(request, 'discussion/discussion_detail.html', {
+        'thread': thread,
+        'replies': replies
+    })
+
+@method_decorator(login_required, name='dispatch')
+class DiscussionCategoryListView(View):
+    def get(self, request):
+        categories = DiscussionCategory.objects.all()
+        return render(request, 'discussion/category_list.html', {'categories': categories})
+
+
+@method_decorator(login_required, name='dispatch')
+class DiscussionThreadListView(View):
+    def get(self, request, category_id):
+        category = get_object_or_404(DiscussionCategory, id=category_id)
+        threads = DiscussionThread.objects.filter(category=category).order_by('-created_at')
+        return render(request, 'discussion/thread_list.html', {
+            'category': category,
+            'threads': threads
+        })
+
+
+@method_decorator(login_required, name='dispatch')
+class DiscussionThreadDetailView(View):
+    def get(self, request, pk):
+        thread = get_object_or_404(DiscussionThread, pk=pk)
+        replies = thread.replies.all().order_by('created_at')
+        form = ThreadReplyForm()
+        return render(request, 'discussion/thread_detail.html', {
+            'thread': thread,
+            'replies': replies,
+            'form': form
+        })
+
+    def post(self, request, pk):
+        thread = get_object_or_404(DiscussionThread, pk=pk)
+        form = ThreadReplyForm(request.POST)
+        if form.is_valid():
+            reply = form.save(commit=False)
+            reply.thread = thread
+            reply.author = request.user
+            reply.save()
+            return redirect('MajorHelp:discussion_detail', pk=thread.pk)
+
+        replies = thread.replies.all().order_by('created_at')
+        return render(request, 'discussion/thread_detail.html', {
+            'thread': thread,
+            'replies': replies,
+            'form': form
+        })
+
+@login_required
+def discussion_board(request):
+    category_id = request.GET.get('category')
+    threads = DiscussionThread.objects.select_related('author', 'category').order_by('-created_at')
+
+    if category_id:
+        threads = threads.filter(category_id=category_id)
+
+    return render(request, 'discussion/discussion_board.html', {'threads': threads})
 
 def settings_view(request):
     return render(request, 'settings.html')  # Make sure you have a 'settings.html' template, or adjust accordingly
@@ -64,6 +212,7 @@ class UniversityOverviewView(DetailView):
     # Use slug as the lookup field
     slug_field = 'slug'
     slug_url_kwarg = 'slug'
+    
 
     def get_object(self):
         slug = self.kwargs['slug']
@@ -71,14 +220,43 @@ class UniversityOverviewView(DetailView):
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        context['latest_post_list'] = UniversityReview.objects.filter(university=self.object)
-        university = self.object
+        university = self.get_object()
+
+        if self.request.user.is_authenticated:
+            context['is_favorite'] = Favorite.objects.filter(
+                user=self.request.user,
+                university=university
+            ).exists()
+
+            # Whether this user already submitted a review
+            context['user_review'] = UniversityReview.objects.filter(
+                username=self.request.user.username,
+                university=university
+            ).exists()
+        else:
+            context['is_favorite'] = False
+
+        # ✅ Add this line to include latest posts
+        context['latest_post_list'] = UniversityReview.objects.filter(
+            university=university
+        ).order_by('-pub_date')
+
+        context['primary_color'] = university.primary_color if university.primary_color else '#ffffff'
+        context['secondary_color'] = university.secondary_color if university.secondary_color else '#ffffff'
+        
+        return context
         
         #JUMP
         if self.request.user.is_authenticated:
             self.request.user.refresh_from_db()
             user_review = UniversityReview.objects.filter(username=self.request.user.username, university=university).exists()
             context['user_review'] = user_review  # If review exists, pass it to the template
+            
+            #Adds favorite status to context
+            context['is_favorite'] = Favorite.objects.filter (
+                user=self.request.user, 
+                university=university
+            ).exists()
 
         
         return context
@@ -352,6 +530,15 @@ class SchoolResultsView(View):
         else:
             sorted_results = results
 
+# Get favorite major IDs for the current user
+        favorite_major_ids = []
+        if request.user.is_authenticated:
+            favorite_major_ids = list(
+                Favorite.objects.filter(
+                    user=request.user,
+                    major__in=majors
+                ).values_list('major_id', flat=True)
+            )
         # Render the template
         return render(request, 'search/school_results.html', {
             'query': query,
@@ -361,6 +548,7 @@ class SchoolResultsView(View):
             'min_tuition': min_tuition,
             'max_tuition': max_tuition,
             'is_out_state': is_out_state,
+            'favorite_major_ids': favorite_major_ids,
         })
 
 
@@ -397,6 +585,16 @@ class DepartmentResultsView(View):
         elif sort_order == 'high_to_low':
             majors = majors.order_by('-out_of_state_min_tuition' if is_out_state else '-in_state_min_tuition')
 
+        # Get favorite major IDs for the current user
+        favorite_major_ids = []
+        if request.user.is_authenticated:
+            favorite_major_ids = list(
+                Favorite.objects.filter(
+                    user=request.user,
+                    major__in=majors
+                ).values_list('major_id', flat=True)
+            )
+
         # Group majors by university and department
         results = {}
         for major in majors:
@@ -409,9 +607,12 @@ class DepartmentResultsView(View):
                 }
             if major.department not in results[university]['departments']:
                 results[university]['departments'][major.department] = []
-            results[university]['departments'][major.department].append(major)
+            
+            results[university]['departments'][major.department].append({
+                'major': major,
+                'is_favorite': major.id in favorite_major_ids
+            })
 
-        # Render the template
         return render(request, 'search/department_results.html', {
             'query': query,
             'results': results,
@@ -420,6 +621,7 @@ class DepartmentResultsView(View):
             'min_tuition': min_tuition,
             'max_tuition': max_tuition,
             'is_out_state': is_out_state,
+            'favorite_major_ids': favorite_major_ids,
         })
 
 class MajorResultsView(View):
@@ -468,6 +670,16 @@ class MajorResultsView(View):
                 results[university]['departments'][major.department] = []
             results[university]['departments'][major.department].append(major)
 
+        favorite_major_ids = []
+        if request.user.is_authenticated:
+            favorite_major_ids = list(
+                Favorite.objects.filter(
+                    user=request.user,
+                    major__in=majors
+                ).values_list('major_id', flat=True)
+            )
+
+    
         # Render the template
         return render(request, 'search/major_results.html', {
             'query': query,
@@ -477,210 +689,59 @@ class MajorResultsView(View):
             'min_tuition': min_tuition,
             'max_tuition': max_tuition,
             'is_out_state': is_out_state,
+            'favorite_major_ids': favorite_major_ids,
         })
     
 class MajorOverviewView(DetailView):
     model = Major
     template_name = "major/MajorOverviewPage.html"
     context_object_name = "major"
+    slug_field = 'slug'
+    slug_url_kwarg = 'slug'
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         major = self.object
 
-        # Calculate the average rating for all reviews for this major
+        # Calculate average rating
         reviews = major.major_reviews.all()
         if reviews.exists():
             average_rating = reviews.aggregate(Avg('rating'))['rating__avg']
-            context['average_rating'] = round(average_rating, 1)  # Round to 1 decimal place
+            context['average_rating'] = round(float(average_rating), 1)
         else:
-            context['average_rating'] = 0  # Default to 0 if no reviews exist
+            context['average_rating'] = 0.0
 
         context['reviews'] = reviews
         context['star_range'] = [1, 2, 3, 4, 5]
 
-        #JUMP
-        # Check if the user has already left a review for this major
+        # Check if user has already left a review
         if self.request.user.is_authenticated:
-            user_review = MajorReview.objects.filter(user=self.request.user, major=major).first()
-            context['user_review'] = user_review  # If review exists, pass it to the template
+            context['user_review'] = MajorReview.objects.filter(
+                user=self.request.user, 
+                major=major
+            ).first()
+
+            # Check if major is favorited - use consistent naming ('is_favorite')
+            context['is_favorite'] = Favorite.objects.filter(
+                user=self.request.user,
+                major=major
+            ).exists()
+        else:
+            context['is_favorite'] = False
 
         return context
 
 
 class CalcView(View):
     def get(self, request):
-        # TODO(jpreuss) Pass the json back to the frontend to prepopulate
-        #               the already filled data.
-        return render(request, 'calc/calc.html')
+        saved_calcs = {}
+        if request.user.is_authenticated:
+            request.user.refresh_from_db()  # Make sure we get the latest data
+            saved_calcs = request.user.savedCalcs
 
-# Flag for the backend to tell the front that it doesn't exist.
-DNE = "DOESNOTEXIST"
-
-class CalcInfo(View):
-    def get(self, request):
-        
-        # Check to see if there are no entries in the GET request, if so, its
-        # likely because the user is accessing /calc/info on their browser directly.
-        if not request.GET:
-
-        # if so then just redirect to the calculator
-            return HttpResponseRedirect(reverse("MajorHelp:calc"))
-        
-
-
-        inData = {}
-        try: 
-            inData = {
-                "university" : request.GET['uni'],          # required
-                "outstate"   : request.GET['outstate'],
-                "department" : request.GET['dept'],
-                "major"      : request.GET['major'],        # required
-                "aid"        : request.GET['aid'],
-            }
-        
-        # This exception is raised if one of the values (uni, dept, etc) is not defined.
-        # Effectively, this saves me from having to do an if with DeMorgan's law on every
-        # single data value.
-        #
-        # If there isn't a value defined yet, then for some reason the front end did not
-        # validate the get json, return a 400 - Bad Request
-        except MultiValueDictKeyError as e:
-            
-            # \u0002 (␂) aka start of text will be used in case the front end needs to
-            # skip any header and get to the 'str(e)' that contains the malformated
-            # (likely null) entry.
-            return HttpResponseBadRequest("<h1> 400 Bad Request </h1><br>\u0002" + str(e) + " is not defined.")
-
-
-        # Prepare the output JSON
-
-        # Get whether the student is instate or out of state     
-        outstate = inData["outstate"] == "true"
-
-        # Get the university.
-
-        # University is a required entry
-        if inData["university"] == "":
-            return HttpResponseBadRequest("<h1> 400 Bad Request </h1><br>\u0002 'uni' is left blank.")
-
-
-        university = {
-            "name"          : None,
-            "baseMinTui"    : 0,
-            "baseMaxTui"    : 0,
-            "fees"          : 0,
-        }
-
-
-        # For now we'll have to rely on the user inputting the name of the university exactly.
-        uniObj = None
-        try:
-            uniObj = University.objects.get(name__iexact=inData["university"])
-
-        except University.DoesNotExist as error:
-            # print("No university of name: \"" + inData["university"] + "\" was found.")
-
-            university["name"] = DNE
-        else:
-            # get the data for the university
-
-            university["name"]  = uniObj.name
-
-            university["baseMinTui"] = uniObj.out_of_state_base_min_tuition if outstate else uniObj.in_state_base_min_tuition
-            university["baseMaxTui"] = uniObj.out_of_state_base_max_tuition if outstate else uniObj.in_state_base_max_tuition
-
-            university["fees"] = uniObj.fees
-
-
-        # Get the Major
-
-        # Major is a required entry
-        if inData["major"] == "":
-            return HttpResponseBadRequest("<h1> 400 Bad Request </h1><br>\u0002 'major' is left blank.")
-
-
-        major = {
-            "name"          : None,
-            "uni"           : None,
-            "baseMinTui"    : 0,
-            "baseMaxTui"    : 0,
-            "fees"          : 0,
-        }
-
-
-        majorObj = None
-        try: 
-            majorObj = Major.objects.get(major_name__iexact=inData["major"])
-
-        except Major.DoesNotExist as error:
-            # print("No major of name: \"" + inData["major"] + "\" was found.")
-
-            major["name"] = DNE
-        else: 
-            # get the data for the majo
-
-            major["name"] = majorObj.major_name
-
-            major["uni"] = majorObj.university.name
-
-            major["baseMinTui"] = majorObj.out_of_state_min_tuition if outstate else majorObj.in_state_min_tuition
-            major["baseMaxTui"] = majorObj.out_of_state_max_tuition if outstate else majorObj.in_state_max_tuition
-
-            major["fees"] = majorObj.fees
-
-
-        # setup financial aid
-
-        aid = {
-            "name"          : "",
-            "amount"        : 0,
-        }
-
-
-        if (inData["aid"] != ""):
-            aidObj = None
-            try:
-                aidObj = FinancialAid.objects.get(name__iexact=inData["aid"])
-            except FinancialAid.DoesNotExist as error:
-                # print("No financial aid of name: \"" + inData["aid"] + "\" was found.")
-
-                aid["name"] = DNE
-            else:
-                # get the data for Financial aid
-                aid["name"] = aidObj.name
-
-                aid["amount"] = aidObj.amount
-
-
-
-
-        outData = {
-            "minTui"        : 0,
-            "maxTui"        : 0,
-            "outstate"      : False,
-            "uni"           : university,
-            "major"         : major,
-            "aid"           : aid,
-            # Any extra data can either go here or in Alerts.
-            "Alerts"     : {},    # Kept for aspirational purposes
-        }
-
-
-        outData['outstate'] = outstate
-
-        # calculate the final tuition range
-
-        outData["minTui"] = university["baseMinTui"] + university["fees"]   + \
-                            major["baseMinTui"] + major["fees"]               \
-                            - aid["amount"]
-
-        outData["maxTui"] = university["baseMaxTui"] + university["fees"]   + \
-                            major["baseMaxTui"] + major["fees"]               \
-                            - aid["amount"]
-        
-
-        return JsonResponse(outData)
+        return render(request, 'calc/calc_page.html', {
+            'saved_calcs': saved_calcs
+        })
 
 
 # LeaveMajorReview View - Exclusive for leaving reviews for a major at a specific school
@@ -731,21 +792,18 @@ class UniversityRequestView(View):
             messages.error(request, 'Please enter your request.')
             return render(request, 'search/universityRequest.html')
     
-from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
-from .models import University
 
 @csrf_exempt
 def university_search(request):
     query = request.GET.get('query', '')
 
     if not query:
-        return JsonResponse({"error": "No search query provided"}, status=400)
+        return HttpResponse("Error - No search query provided", status=400)
 
     universities = University.objects.filter(name__icontains=query)
 
     if not universities.exists():
-        return JsonResponse({"error": "No university found"}, status=404)
+        return HttpResponse("Error - No university found", status=404)
 
     data = {"universities": []}
     for uni in universities:
@@ -756,14 +814,209 @@ def university_search(request):
         })
 
     return JsonResponse(data)
+
+def calc_list(request):
+    if not request.user.is_authenticated:
+        # 401 - Unauthorized
+        # https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/401
+        return HttpResponse("Error - You must be logged in", status=401)
+    
+    user = request.user
+
+
+    query = request.GET.get('query')
+
+    if not query:
+        return HttpResponse("Error - No query provided", status=400)
+
+    # lower the query so that the filtering can be case insensitive
+    query = query.lower()
+
+    # dict_you_want = {key: old_dict[key] for key in your_keys}
+
+    # # Returns the values of the calculators matching the filtered_keys
+    # filtered_keys = ["Calculator 1", "Calculator 2"]
+    # calculators = {key: user.savedCalcs[key] for key in filtered_keys}
+    # 
+    # # Might be useful later
+
+    # >>> lst = ['a', 'ab', 'abc', 'bac']
+    # >>> [k for k in lst if 'ab' in k]
+    # ['ab', 'abc']
+
+
+    # Grab the saved calculators from the user:
+    savedCalcs = list(user.savedCalcs.keys())
+    # This converts a dict_keys to a list of strings
+
+
+    # Filter by the given query:
+    applicableKeys = [key for key in savedCalcs if query in key]
+
+    data = {"calculators" : []}
+
+    # Create a dictionary of the mix-case names to their corresponding keys
+    for key in applicableKeys:
+        data['calculators'].append(
+            user.savedCalcs[key]
+        )
+
+    print(data)
+
+    # Return the data
+
+    # Example return data:
+    #
+    #   {'calculators'  :   [
+    #       {
+    #           'calcName'  :   'UofSC',
+    #           'uni'       :   'UofSC',
+    #           'outstate'  :    False,
+    #           'dept'      :   'Engineering and Technology',
+    #           'major'     :   'CIS',
+    #           'aid'       :   'Palmetto Fellows'
+    #       },
+    #       {
+    #           'calcName'  :   'Custom Name',
+    #            ...
+    #       },
+    #       ...
+    #   ]}
+    #
+
+    return JsonResponse(data)
+
+def save_calc(request):
+    if not request.user.is_authenticated:
+        return HttpResponse("Error - You must be logged in", status=403) # 403 Forbidden
+
+    user = request.user
+
+    if request.method == 'DELETE':
+        # Expected Data
+        #
+        # { 'calcname' : { True } } // key is the name of the calculator but in lowercase
+        # 
+        # // The value in the json is not important, just the key is used to delete the calculator
+        
+        try:
+            data = json.loads(request.body.decode())
+            key = list(data.keys())[0].lower()
+
+            if key in user.savedCalcs:
+                del user.savedCalcs[key]
+                user.save()
+                return HttpResponse("Deleted", status=204) # No Content, preferred for deletions
+            else: 
+                return HttpResponse("Key not found", status=404)
+
+        except Exception as e:
+            return HttpResponseBadRequest("Invalid delete request: " + str(e))
+
+    if request.method == 'POST':
+        # Expected Data
+        # { 'calcname'      : {      // key is the name of the calculator but in lowercase
+        #        'calcName'      :   'testCalc',
+        #        'uni'           :   'exampleUni',
+        #        'oustate'       :    False,
+        #        'dept'          :   'Humanities and Social Sciences',
+        #        'major'         :   'exampleMajor',
+        #        'aid'           :   'exampleAid',
+        #    }
+        # }
+
+
+        try:
+            data = json.loads(request.body.decode())
+            key = list(data.keys())[0].lower() # The view "politely" corrects the key to be lowercase
+            value = data[key]
+
+            # Validate value
+            if not isinstance(value, dict):
+                return HttpResponseBadRequest("Invalid value format. Expected a dictionary.")
+            
+            # Validate required fields in the value dictionary
+            required_fields = ['calcName', 'uni', 'outstate', 'dept', 'major', 'aid']
+            for field in required_fields:
+                if field not in value:
+                    return HttpResponseBadRequest(f"Missing required field: {field}")
+
+            # Validate that all fields are strings or booleans as appropriate
+            for field in required_fields:
+                if field == 'outstate':
+                    if not isinstance(value[field], bool):
+                        return HttpResponseBadRequest(f"Field '{field}' must be a boolean.")
+                elif field == 'aid':
+                    if not isinstance(value[field], (str, int)):
+                        return HttpResponseBadRequest(f"Field '{field}' must be a string or an integer.")
+                else:
+                    if not isinstance(value[field], str):
+                        return HttpResponseBadRequest(f"Field '{field}' must be a string.")
+
+            # Save or update the calculator
+            user.savedCalcs[key] = value
+            user.save()
+            return HttpResponse("Saved", status=201) # Created, preferred for new resources
+
+        except Exception as e:
+            return HttpResponseBadRequest("Error saving calculator: " + str(e))
+
+
+    # The method was neither delete nor post, respond with 405 and an allow header with the list
+    # of the supported methods
+
+    # (mozilla wants us to do this apparently)
+    # https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Allow
+
+    allowed_methods = "POST, DELETE"
+
+    # return an http response with a 405 status code and the allowed methods in the header
+    response = HttpResponse("Method Not Allowed", status=405)
+
+    # Add the values in the allowed methods to the header
+    response['Allow'] = allowed_methods
+   
+    return response
+
+
+
+def aid_list(request):
+    uniQuery = request.GET.get('university')
+    uniObj = None
+
+    if not uniQuery:
+        return HttpResponse("Error - No university provided.", status=400)
+
+    try:
+        uniObj = University.objects.get(name__iexact=uniQuery)
+    except University.DoesNotExist as error:
+        return HttpResponse("Error - No university found.", status=404)
+    
+    data = {"aids" : []}
+    for aid in uniObj.applicableAids.all():
+        data["aids"].append({
+            'name'      : aid.name,
+            'location'  : aid.location,
+            'amount'    : aid.amount,
+        })
+    
+    return JsonResponse(data)
+
+
 def major_list(request):
     university_name = request.GET.get('university', '')
     department = request.GET.get('department', '')
 
+    if not university_name:
+        return HttpResponse("Error - No university provided.", status=400)
+
+    if not department:
+        return HttpResponse("Error - No department provided.", status=400)
+
     # Ensure university exists
     university = University.objects.filter(name__icontains=university_name).first()
     if not university:
-        return JsonResponse({"error": "University not found"}, status=404)
+        return HttpResponse("Error - University not found", status=404)
 
     # Filter majors by university and department
     majors = Major.objects.filter(university=university, department=department)
@@ -771,31 +1024,72 @@ def major_list(request):
         return JsonResponse({"majors": []})  # Return empty list if no majors found
 
     data = {"majors": [{"name": major.major_name} for major in majors]}
+
     return JsonResponse(data)
-def major_info(request):
-    university_name = request.GET.get('university', '')
-    major_name = request.GET.get('major', '')
-    outstate = request.GET.get('outstate', 'false') == 'true'
+
+
+def calculate(request):
+    
+    university_name = request.GET.get('university')
+    major_name = request.GET.get('major')
+    outstate = request.GET.get('outstate')
+    aid_name = request.GET.get('aid')
+
+    if not university_name:
+        return HttpResponse("Error - No university provided.", status=400)
+
+    if not major_name:
+        return HttpResponse("Error - No major provided.", status=400)
+
+    if not outstate:
+        return HttpResponse("Error - No outstate provided.", status=400)
+
+    # effectively cast outstate to a boolean now that we know its validated
+    outstate = outstate == 'true'
+
 
     # Ensure university exists
     university = University.objects.filter(name__icontains=university_name).first()
     if not university:
-        return JsonResponse({"error": "University not found"}, status=404)
+        return HttpResponse("Error - University not found", status=404)
 
     # Ensure major exists
     major = Major.objects.filter(university=university, major_name__icontains=major_name).first()
     if not major:
-        return JsonResponse({"error": "Major not found"}, status=404)
+        return HttpResponse("Error - Major not found", status=404)
+
+    # Get aid
+    aid = 0
+    aidObj = None
+
+    if aid_name and aid_name not in ["", "None", "null"]:
+        # Try to convert to int (custom aid), else treat as aid name
+        try:
+            aid = int(aid_name)
+        except ValueError:
+            aidObj = FinancialAid.objects.filter(name=aid_name).first()
+            if not aidObj:
+                return HttpResponse("Error - Financial Aid not found.", status=404)
+            aid = aidObj.amount
+
+    
+
 
     # Determine correct tuition range
     if outstate:
         min_tuition = university.out_of_state_base_min_tuition + major.out_of_state_min_tuition
         max_tuition = university.out_of_state_base_max_tuition + major.out_of_state_max_tuition
     else:
-        min_tuition = university.in_state_base_min_tuition + major.in_state_min_tuition
+        min_tuition = university.in_state_base_min_tuition + major.in_state_min_tuition 
         max_tuition = university.in_state_base_max_tuition + major.in_state_max_tuition
 
+    # Apply Aid
+    min_tuition -= aid
+    max_tuition -= aid
+
     data = {
+        "minTui": min_tuition,
+        "maxTui": max_tuition,
         "uni": {
             "name": university.name,
             "baseMinTui": university.in_state_base_min_tuition if not outstate else university.out_of_state_base_min_tuition,
@@ -808,8 +1102,94 @@ def major_info(request):
             "baseMaxTui": major.in_state_max_tuition if not outstate else major.out_of_state_max_tuition,
             "fees": major.fees
         },
-        "minTui": min_tuition,
-        "maxTui": max_tuition
+        "aid": (
+            {} if aid_name in ["", "None", "null", None]
+            else {"name": aidObj.name, "amount": aidObj.amount} if aidObj
+            else {"name": f"Custom Aid (${aid})", "amount": aid}
+        ),
+
     }
 
     return JsonResponse(data)
+
+# favorite feature views for universities and majors 
+@require_POST
+@login_required
+def toggle_favorite(request, object_type, object_id):
+    if object_type == 'university':
+        obj = get_object_or_404(University, pk=object_id)
+        favorite, created = Favorite.objects.get_or_create(
+            user=request.user,
+            university=obj
+        )
+    elif object_type == 'major':
+        obj = get_object_or_404(Major, pk=object_id)
+        favorite, created = Favorite.objects.get_or_create(
+            user=request.user,
+            major=obj
+        )
+    else:
+        return JsonResponse({'status': 'error', 'message': 'Invalid object type'}, status=400)
+    
+    if not created:
+        favorite.delete()
+        return JsonResponse({'status': 'removed'})
+    
+    return JsonResponse({'status': 'added'})
+
+# for favorites page
+@login_required
+def favorites_list(request):
+    university_favorites = Favorite.objects.filter(
+        user=request.user, 
+        university__isnull=False
+    ).select_related('university').order_by('-created_at') # order_by sorts the list by most recent add to the list for universities in this case.
+    
+    major_favorites = Favorite.objects.filter(
+        user=request.user, 
+        major__isnull=False
+    ).select_related('major', 'major__university').order_by('-created_at') # order_by sorts the list by most recent add to the list for majors in this case.
+    
+    return render(request, 'Favorite/favorites.html', {
+        'university_favorites': university_favorites,
+        'major_favorites': major_favorites
+    })
+
+
+# Major overview class created to handle favorites 
+class MajorOverviewView(DetailView):
+    model = Major
+    template_name = "major/MajorOverviewPage.html"
+    context_object_name = "major"
+    slug_field = 'slug'
+    slug_url_kwarg = 'slug'
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        major = self.object
+
+        # Calculate average rating
+        reviews = major.major_reviews.all()
+        if reviews.exists():
+            average_rating = reviews.aggregate(Avg('rating'))['rating__avg']
+            context['average_rating'] = round(float(average_rating), 1)
+        else:
+            context['average_rating'] = 0.0
+
+        context['reviews'] = reviews
+        context['star_range'] = [1, 2, 3, 4, 5]
+
+        # Check if user has already left a review
+        if self.request.user.is_authenticated:
+            context['user_review'] = MajorReview.objects.filter(
+                user=self.request.user, 
+                major=major
+            ).first()
+
+            # Check if major is favorited
+            context['is_favorite'] = Favorite.objects.filter(
+                user=self.request.user,
+                major=major
+            ).exists()
+
+        return context

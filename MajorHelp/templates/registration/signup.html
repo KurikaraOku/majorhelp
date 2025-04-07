@@ -3,6 +3,15 @@
 {% block title %}Sign Up{% endblock %}
 
 {% block content %}
+
+<style>
+    body {
+    height: 100vh; 
+    background: linear-gradient(45deg, #4FC7CF, #15787f);
+    background-size: 300% 300%;
+    animation: gradientAnimation 6s ease infinite; 
+}
+</style>
 <div class="signup-container">
     <div class="signup-header">
         <h1>Sign <span class="highlight">Up</span></h1>
@@ -74,6 +83,7 @@ document.addEventListener("DOMContentLoaded", function() {
     passwordInput.addEventListener("input", function() {
         let strength = 0;
         const password = passwordInput.value;
+        const MAXSTRENGTH = 5
         
         if (password.length > 6) strength++; 
         if (password.length > 10) strength++; 
@@ -84,7 +94,7 @@ document.addEventListener("DOMContentLoaded", function() {
         const strengthLevels = ["Weak", "Moderate", "Strong", "Very Strong"];
         strengthText.textContent = "Strength: " + strengthLevels[Math.min(strength, strengthLevels.length - 1)];
 
-        strengthBar.style.width = (strength * 25) + "%";
+        strengthBar.style.width = (strength * (100/MAXSTRENGTH)) + "%";
         strengthBar.style.backgroundColor = ["red", "orange", "yellow", "green"][Math.min(strength, 3)];
     });
 });

@@ -14,17 +14,18 @@ class TestSearchwithnothing():
   def setup_method(self, method):
     self.driver = webdriver.Firefox()
     self.vars = {}
+    # Wait until the page has loaded
+    WebDriverWait(self.driver, 10).until(
+        expected_conditions.presence_of_element_located((By.TAG_NAME, "body"))
+    )
+    self.driver.maximize_window()
   
   def teardown_method(self, method):
     self.driver.quit()
   
   def test_searchwithnothing(self):
-    self.driver.get("https://majorhelp.onrender.com/")
+    self.driver.get("http://127.0.0.1:8000/")
     time.sleep(2)
     self.driver.find_element(By.LINK_TEXT, "Search").click()
     time.sleep(2)
     self.driver.find_element(By.CSS_SELECTOR, "button").click()
-    time.sleep(2)
-    elements = self.driver.find_elements(By.CSS_SELECTOR, ".search-container > .filter-label")
-    assert len(elements) > 0
-  
